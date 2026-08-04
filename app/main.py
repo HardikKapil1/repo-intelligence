@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 
+from app.api.routes.repository import router as repository_router
+
 app = FastAPI(title="Repo Intelligence API")
+
+app.include_router(repository_router)
 
 
 @app.get("/health")
