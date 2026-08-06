@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.routes.repository import router as repository_router
+from app.api.routes.repositories import router as repository_router
 
 app = FastAPI(title="Repo Intelligence API")
 
