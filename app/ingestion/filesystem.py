@@ -7,6 +7,7 @@ class SourceFile:
     path: Path
     relative_path: str
     size_bytes: int
+    language: str | None = None
 
 
 class FileDiscovery:

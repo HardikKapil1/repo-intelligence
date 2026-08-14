@@ -9,7 +9,7 @@ router = APIRouter()
 
 
 @router.post(
-    "/repositories/",
+    "/repositories",
     response_model=RepositoryResponse,
     status_code=status.HTTP_201_CREATED,
 )

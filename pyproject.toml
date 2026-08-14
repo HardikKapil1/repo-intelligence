@@ -12,6 +12,8 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "pyright>=1.1.411",
     "sqlalchemy>=2.0.51",
+    "tree-sitter>=0.26.0",
+    "tree-sitter-python>=0.25.0",
     "uvicorn>=0.52.1",
 ]
 [dependency-groups]

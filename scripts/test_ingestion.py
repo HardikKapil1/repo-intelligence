@@ -1,47 +1,53 @@
-import sys
 from pathlib import Path
-from uuid import uuid4
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from app.ingestion.filesystem import FileDiscovery
-from app.ingestion.filter import FileFilter
-from app.ingestion.github import GitHubCloner
+from app.ingestion.classification import FileClassifier
+from app.ingestion.filesystem import FileDiscovery, SourceFile
 from app.ingestion.language import LanguageDetector
 
 
 def main():
-    base_storage_path = Path("data/repositories")
-    target_url = "https://github.com/psf/requests"
-    repo_id = uuid4()
+    repos_dir = Path("data/repositories")
 
-    print(f"Cloning repository: {target_url}...")
-    cloner = GitHubCloner(base_path=base_storage_path)
-    repo_path = cloner.clone(repository_url=target_url, repository_id=repo_id)
+    # Find the first directory inside data/repositories
+    repo_folders = [d for d in repos_dir.iterdir() if d.is_dir()]
 
-    # 1. Discover all raw files
+    if not repo_folders:
+        print("❌ No repository folders found in data/repositories/")
+        return
+
+    repo_path = repo_folders[0]
+    print(f"📁 Testing ingestion on repository: {repo_path.name}\n")
+
+    # 1. Discover raw files
     discovery = FileDiscovery()
     raw_files = discovery.discover(repo_path)
 
-    # 2. Filter files
-    file_filter = FileFilter()
-    filter_result = file_filter.filter(raw_files)
-
-    # 3. Detect languages for accepted files
+    # 2. Language Detection & Classification
     detector = LanguageDetector()
+    classifier = FileClassifier()
 
-    print(f"\nDiscovered: {len(raw_files)}")
-    print(f"Accepted:   {len(filter_result.accepted)}")
-    print(f"Filtered:   {len(filter_result.filtered)}\n")
+    classified_files: list[tuple[SourceFile, str]] = []
 
-    print(f"{'Accepted File':<55} | {'Detected Language':<20}")
-    print("-" * 78)
+    for raw_file in raw_files:
+        lang = detector.detect(raw_file.path)
 
-    for file in filter_result.accepted:
-        language = detector.detect(Path(file.relative_path))
-        lang_str = language if language else "Unknown (None)"
-        print(f"{file.relative_path:<55} | {lang_str:<20}")
+        source_file = SourceFile(
+            path=raw_file.path,
+            relative_path=raw_file.relative_path,
+            size_bytes=raw_file.size_bytes,
+            language=lang,
+        )
+
+        category = classifier.classify(source_file)
+        classified_files.append((source_file, category.value))
+
+    # 3. Print output in table format
+    print(f"{'Path':<45} {'Language':<14} {'Category':<15}")
+    print("-" * 74)
+
+    for file, category in classified_files:
+        lang_str = file.language if file.language else "unknown"
+        print(f"{file.relative_path:<45} {lang_str:<14} {category:<15}")
 
 
 if __name__ == "__main__":
