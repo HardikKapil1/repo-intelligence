@@ -1,21 +1,16 @@
+from app.ingestion.chunking import CodeChunker
 from app.ingestion.parsers.python import PythonParser
 
 
-def print_node(node, indent=0):
-    """Recursively prints Tree-sitter AST nodes with indentation."""
-    # Format line range for readability
-    line_start, col_start = node.start_point
-    line_end, col_end = node.end_point
-    location = f"[{line_start}:{col_start} - {line_end}:{col_end}]"
-
-    print(f"{'  ' * indent}└─ {node.type} {location}")
-
-    for child in node.children:
-        print_node(child, indent + 1)
-
-
 def main():
-    sample_code = b"""class AuthService:
+    parser = PythonParser()
+    chunker = CodeChunker()
+
+    sample_code = """
+def standalone_func():
+    return "I am a function"
+
+class AuthService:
     def login(self, username, password):
         return True
 
@@ -23,14 +18,27 @@ def main():
         return True
 """
 
-    parser = PythonParser()
-    root_node = parser.parse(sample_code)
+    symbols = parser.parse(sample_code)
 
-    print("--- Tree-sitter AST Root Node ---")
-    print(f"Root Type: {root_node.type}\n")
+    print("--- Extracted Code Symbols ---")
+    for symbol in symbols:
+        print(
+            f"[{symbol.symbol_type.upper()}] {symbol.name} "
+            f"(Lines {symbol.start_line}-{symbol.end_line}) "
+            f"Parent: {symbol.parent_symbol}"
+        )
 
-    print("--- Full Syntax Tree ---")
-    print_node(root_node)
+    file_path = "src/auth.py"
+    language = "python"
+    chunks = chunker.chunk(symbols, file_path=file_path, language=language)
+
+    print("\n--- Generated Code Chunks ---")
+    for idx, chunk in enumerate(chunks, 1):
+        parent_info = f"{chunk.parent_symbol}." if chunk.parent_symbol else ""
+        print(
+            f"Chunk #{idx} | [{chunk.symbol_type.upper()}] {parent_info}{chunk.symbol_name} "
+            f"({chunk.file_path}:{chunk.start_line}-{chunk.end_line})"
+        )
 
 
 if __name__ == "__main__":
