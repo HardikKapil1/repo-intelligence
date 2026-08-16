@@ -1,3 +1,4 @@
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from uuid import UUID
@@ -22,6 +23,7 @@ class IngestionService:
         self.db = db
 
         self.cloner = GitHubCloner(Path("data/repositories"))
+
         self.discovery = FileDiscovery()
         self.file_filter = FileFilter()
         self.language_detector = LanguageDetector()
@@ -30,73 +32,301 @@ class IngestionService:
         self.chunker = CodeChunker()
 
     def index_repository(self, repository_id: UUID) -> None:
-        repository = self.db.get(Repository, repository_id)
+        """
+        Index a GitHub repository.
+
+        Current flow:
+
+        Repository
+            ↓
+        Clone
+            ↓
+        Discover files
+            ↓
+        Filter files
+            ↓
+        Detect language
+            ↓
+        Classify file
+            ↓
+        Parse supported code
+            ↓
+        Generate chunks
+            ↓
+        Persist chunks
+        """
+
+        repository = self.db.get(
+            Repository,
+            repository_id,
+        )
 
         if repository is None:
             raise ValueError("Repository not found")
+
+        print(
+            f"[INGESTION] Starting repository: {repository_id}",
+            flush=True,
+        )
 
         repository.status = RepositoryStatus.INDEXING
         self.db.commit()
 
         try:
+            # ---------------------------------------------------------
+            # 1. Clone repository
+            # ---------------------------------------------------------
+
+            print(
+                "[INGESTION] Cloning repository...",
+                flush=True,
+            )
+
             repository_path = self.cloner.clone(
                 repository.github_url,
                 repository.id,
             )
 
+            print(
+                f"[INGESTION] Repository cloned: {repository_path}",
+                flush=True,
+            )
+
+            # ---------------------------------------------------------
+            # 2. Discover files
+            # ---------------------------------------------------------
+
             discovered_files = self.discovery.discover(repository_path)
+
+            print(
+                f"[INGESTION] Discovered files: {len(discovered_files)}",
+                flush=True,
+            )
+
+            # ---------------------------------------------------------
+            # 3. Filter files
+            # ---------------------------------------------------------
+
             filtered_files = self.file_filter.filter(discovered_files)
 
-            for source_file in filtered_files.accepted:
-                detected_language = self.language_detector.detect(source_file.path)
+            print(
+                f"[INGESTION] Accepted files: {len(filtered_files.accepted)}",
+                flush=True,
+            )
 
-                category = self.classifier.classify(source_file)
+            print(
+                f"[INGESTION] Filtered files: {len(filtered_files.filtered)}",
+                flush=True,
+            )
 
-                repository_file = RepositoryFile(
-                    repository_id=repository.id,
-                    path=str(source_file.relative_path),
-                    language=detected_language,
-                    category=category.value,
-                    size_bytes=source_file.size_bytes,
+            # ---------------------------------------------------------
+            # 4. Process accepted files
+            # ---------------------------------------------------------
+
+            print(
+                "[INGESTION] Starting file processing",
+                flush=True,
+            )
+
+            for index, source_file in enumerate(
+                filtered_files.accepted,
+                start=1,
+            ):
+                print(
+                    f"[FILE {index}/{len(filtered_files.accepted)}] "
+                    f"{source_file.relative_path}",
+                    flush=True,
                 )
 
-                self.db.add(repository_file)
-                self.db.flush()
+                self._process_file(
+                    source_file=source_file,
+                    repository_id=repository.id,
+                )
 
-                if category == FileCategory.CODE and source_file.language == "python":
-                    self._process_python_file(
-                        source_file=source_file,
-                        repository_file=repository_file,
-                    )
+                print(
+                    f"[DONE] {source_file.relative_path}",
+                    flush=True,
+                )
+
+            # ---------------------------------------------------------
+            # 5. Finish ingestion
+            # ---------------------------------------------------------
+
+            print(
+                "[INGESTION] ALL FILES PROCESSED",
+                flush=True,
+            )
 
             repository.status = RepositoryStatus.READY
+
+            print(
+                "[DB] COMMIT START",
+                flush=True,
+            )
+
             self.db.commit()
 
-        except Exception:
+            print(
+                "[DB] COMMIT DONE",
+                flush=True,
+            )
+
+            print(
+                f"[INGESTION] Repository {repository_id} READY",
+                flush=True,
+            )
+
+        except Exception as exc:
+            print(
+                f"[INGESTION] FAILED: {exc}",
+                flush=True,
+            )
+
             self.db.rollback()
 
-            repository.status = RepositoryStatus.FAILED
-            self.db.commit()
+            # Refresh repository because rollback expires ORM state.
+            repository = self.db.get(
+                Repository,
+                repository_id,
+            )
+
+            if repository is not None:
+                repository.status = RepositoryStatus.FAILED
+                self.db.commit()
 
             raise
+
+    def _process_file(
+        self,
+        source_file,
+        repository_id: UUID,
+    ) -> None:
+        """
+        Process one repository file.
+
+        This function intentionally separates:
+
+            detection
+            classification
+            persistence
+            parsing
+
+        so each stage has one responsibility.
+        """
+
+        # -------------------------------------------------------------
+        # 1. Detect language
+        # -------------------------------------------------------------
+
+        detected_language = self.language_detector.detect(source_file.path)
+
+        # SourceFile is immutable, therefore create a new object.
+        source_file = replace(
+            source_file,
+            language=detected_language,
+        )
+
+        print(
+            f"  [LANGUAGE] {source_file.relative_path} → {detected_language}",
+            flush=True,
+        )
+
+        # -------------------------------------------------------------
+        # 2. Classify file
+        # -------------------------------------------------------------
+
+        category = self.classifier.classify(source_file)
+
+        print(
+            f"  [CATEGORY] {source_file.relative_path} → {category.value}",
+            flush=True,
+        )
+
+        # -------------------------------------------------------------
+        # 3. Save repository file metadata
+        # -------------------------------------------------------------
+
+        repository_file = RepositoryFile(
+            repository_id=repository_id,
+            path=str(source_file.relative_path),
+            language=detected_language,
+            category=category.value,
+            size_bytes=source_file.size_bytes,
+        )
+
+        self.db.add(repository_file)
+
+        # We need the generated repository_file.id
+        # before creating child chunks.
+        self.db.flush()
+
+        # -------------------------------------------------------------
+        # 4. Parse supported code
+        # -------------------------------------------------------------
+
+        if category == FileCategory.CODE and detected_language == "python":
+            self._process_python_file(
+                source_file=source_file,
+                repository_file=repository_file,
+            )
 
     def _process_python_file(
         self,
         source_file,
         repository_file: RepositoryFile,
     ) -> None:
+        """
+        Parse a Python source file and persist semantic chunks.
+        """
+
+        print(
+            f"    [START PYTHON] {source_file.relative_path}",
+            flush=True,
+        )
+
+        # -------------------------------------------------------------
+        # 1. Read source
+        # -------------------------------------------------------------
+
         source = source_file.path.read_text(
             encoding="utf-8",
             errors="replace",
         )
 
+        print(
+            f"    [READ] {len(source)} characters",
+            flush=True,
+        )
+
+        # -------------------------------------------------------------
+        # 2. Parse AST
+        # -------------------------------------------------------------
+
         symbols = self.python_parser.parse(source)
+
+        print(
+            f"    [PARSED] {len(symbols)} symbols",
+            flush=True,
+        )
+
+        # -------------------------------------------------------------
+        # 3. Generate semantic chunks
+        # -------------------------------------------------------------
 
         chunks = self.chunker.chunk(
             symbols=symbols,
             file_path=source_file.relative_path,
             language="python",
         )
+
+        print(
+            f"    [CHUNKED] {len(chunks)} chunks",
+            flush=True,
+        )
+
+        # -------------------------------------------------------------
+        # 4. Persist chunks
+        # -------------------------------------------------------------
 
         for chunk in chunks:
             content_hash = sha256(chunk.content.encode("utf-8")).hexdigest()
@@ -113,3 +343,8 @@ class IngestionService:
             )
 
             self.db.add(db_chunk)
+
+        print(
+            f"    [DB QUEUED] {len(chunks)} chunks",
+            flush=True,
+        )
