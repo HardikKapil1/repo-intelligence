@@ -1,3 +1,4 @@
+# app/models/__init__.py
 from app.models.base import Base
 from app.models.chunk import Chunk
 from app.models.repository import Repository

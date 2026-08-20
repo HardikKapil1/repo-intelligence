@@ -1,3 +1,4 @@
+# app/services/ingestion_service.py
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -12,6 +13,7 @@ from app.ingestion.filter import FileFilter
 from app.ingestion.github import GitHubCloner
 from app.ingestion.language import LanguageDetector
 from app.ingestion.parsers.python import PythonParser
+from app.ingestion.safe_parser import safe_parse_python
 from app.models.chunk import Chunk
 from app.models.enums import RepositoryStatus
 from app.models.repository import Repository
@@ -277,6 +279,8 @@ class IngestionService:
     ) -> None:
         """
         Parse a Python source file and persist semantic chunks.
+        Parsing runs in an isolated subprocess so a tree-sitter
+        C-level crash cannot take down the whole ingestion run.
         """
 
         print(
@@ -299,10 +303,29 @@ class IngestionService:
         )
 
         # -------------------------------------------------------------
-        # 2. Parse AST
+        # 2. Parse AST (isolated subprocess)
         # -------------------------------------------------------------
 
-        symbols = self.python_parser.parse(source)
+        status, result = safe_parse_python(source)
+
+        if status != "ok":
+            print(
+                f"    [PARSE FAILED] {source_file.relative_path} → {status}: {result}",
+                flush=True,
+            )
+            # Skip this file's chunks but let the rest of ingestion continue.
+            return
+
+        # Narrow the parser result for type checkers; failed parses return a
+        # diagnostic string while successful parses return CodeSymbol objects.
+        if isinstance(result, str):
+            print(
+                f"    [PARSE FAILED] {source_file.relative_path} → {result}",
+                flush=True,
+            )
+            return
+
+        symbols = result
 
         print(
             f"    [PARSED] {len(symbols)} symbols",

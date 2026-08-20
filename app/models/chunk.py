@@ -1,3 +1,4 @@
+# app/models/chunk.py
 import uuid
 from datetime import datetime
 

@@ -1,3 +1,4 @@
+# app/ingestion/exceptions.py
 class RepositoryCloneError(Exception):
     """Raised when a repository cannot be cloned."""
 

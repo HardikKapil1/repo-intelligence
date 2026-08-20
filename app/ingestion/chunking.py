@@ -1,3 +1,4 @@
+# app/ingestion/chunking.py
 from app.ingestion.parsers.python import CodeSymbol
 
 
