@@ -1,51 +1,93 @@
 # app/ingestion/safe_parser.py
-import multiprocessing
-import traceback
 
-from app.ingestion.parsers.python import CodeSymbol, PythonParser
+import base64
+import json
+import subprocess
+import sys
 
+_WORKER_SCRIPT = """
+import sys, base64, json
 
-def _parse_worker(source_bytes: bytes, result_queue) -> None:
+def main():
+    encoded = sys.stdin.readline()
+    source_bytes = base64.b64decode(encoded)
     try:
+        from app.ingestion.parsers.python import PythonParser
         parser = PythonParser()
         symbols = parser.parse(source_bytes)
-        result_queue.put(("ok", symbols))
-    except Exception:
-        result_queue.put(("error", traceback.format_exc()))
+        result = {
+            "status": "ok",
+            "symbols": [
+                {
+                    "name": s.name,
+                    "symbol_type": s.symbol_type,
+                    "start_line": s.start_line,
+                    "end_line": s.end_line,
+                    "source": s.source,
+                    "parent_symbol": s.parent_symbol,
+                }
+                for s in symbols
+            ],
+        }
+    except Exception as exc:
+        result = {"status": "error", "message": str(exc)}
+
+    print(json.dumps(result))
+
+if __name__ == "__main__":
+    main()
+"""
 
 
-def safe_parse_python(
-    source: str | bytes, timeout: int = 10
-) -> tuple[str, list[CodeSymbol] | str]:
+def safe_parse_python(source: str | bytes, timeout: int = 30):
     """
-    Parses Python source in a separate process so a tree-sitter
-    C-level crash (segfault) cannot kill the main ingestion worker.
-
-    Returns:
-        ("ok", symbols)      -> parsing succeeded
-        ("error", traceback) -> a normal Python exception occurred
-        ("crash", message)   -> the subprocess died (segfault/timeout)
+    Parses Python source in a completely separate OS process
+    (via `python -c`) so a tree-sitter C-level crash cannot kill
+    the main server, and so uvicorn's --reload watcher / spawn
+    re-import behavior on Windows cannot cause a deadlock.
     """
+    from app.ingestion.parsers.python import CodeSymbol
+
     source_bytes = source.encode("utf-8") if isinstance(source, str) else source
+    encoded = base64.b64encode(source_bytes).decode("ascii")
 
-    ctx = multiprocessing.get_context("spawn")
-    result_queue = ctx.Queue()
-    process = ctx.Process(target=_parse_worker, args=(source_bytes, result_queue))
-    process.start()
-    process.join(timeout=timeout)
-
-    if process.is_alive():
-        process.terminate()
-        process.join()
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _WORKER_SCRIPT],
+            input=encoded + "\n",
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
         return ("crash", f"Parsing timed out after {timeout}s")
 
-    if process.exitcode != 0:
+    if proc.returncode != 0:
         return (
             "crash",
-            f"Parser process exited with code {process.exitcode} (likely segfault)",
+            f"Parser process exited with code {proc.returncode} (likely segfault)",
         )
 
-    if result_queue.empty():
-        return ("crash", "Parser process died without returning a result")
+    if not proc.stdout.strip():
+        return ("crash", "Parser process produced no output")
 
-    return result_queue.get()
+    try:
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+    except json.JSONDecodeError:
+        return ("crash", f"Could not parse worker output: {proc.stdout[:200]}")
+
+    if result["status"] == "error":
+        return ("error", result["message"])
+
+    symbols = [
+        CodeSymbol(
+            name=s["name"],
+            symbol_type=s["symbol_type"],
+            start_line=s["start_line"],
+            end_line=s["end_line"],
+            source=s["source"],
+            parent_symbol=s["parent_symbol"],
+        )
+        for s in result["symbols"]
+    ]
+    return ("ok", symbols)

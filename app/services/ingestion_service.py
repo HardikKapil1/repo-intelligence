@@ -352,6 +352,20 @@ class IngestionService:
         # -------------------------------------------------------------
 
         for chunk in chunks:
+            # Skip any chunk with corrupted line numbers (defense
+            # against tree-sitter node metadata corruption).
+            if (
+                chunk.start_line < 1
+                or chunk.end_line < chunk.start_line
+                or chunk.start_line > 10_000_000
+            ):
+                print(
+                    f"    [SKIP CORRUPT] {chunk.symbol_name} "
+                    f"start={chunk.start_line} end={chunk.end_line}",
+                    flush=True,
+                )
+                continue
+
             content_hash = sha256(chunk.content.encode("utf-8")).hexdigest()
 
             db_chunk = Chunk(
@@ -366,8 +380,3 @@ class IngestionService:
             )
 
             self.db.add(db_chunk)
-
-        print(
-            f"    [DB QUEUED] {len(chunks)} chunks",
-            flush=True,
-        )

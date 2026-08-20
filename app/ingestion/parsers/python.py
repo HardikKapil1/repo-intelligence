@@ -17,6 +17,7 @@ class CodeSymbol:
 
 MAX_SOURCE_BYTES = 1_000_000
 
+
 class PythonParser:
     def __init__(self) -> None:
         language = Language(tspython.language())
@@ -92,6 +93,14 @@ class PythonParser:
 
         # Calculate from actual source text.
         end_line = start_line + source_text.count("\n")
+
+        # Guard against tree-sitter node metadata corruption
+        # (rare, seen after deeply nested function definitions):
+        # produces insane start_line values that blow past any
+        # real file's line count and overflow DB integer columns.
+        max_lines = source_bytes.count(b"\n") + 1
+        if start_line < 1 or start_line > max_lines or end_line < start_line:
+            return None
 
         return CodeSymbol(
             name=name,
