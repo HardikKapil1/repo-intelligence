@@ -58,6 +58,7 @@ def safe_parse_python(source: str | bytes, timeout: int = 30):
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return ("crash", f"Parsing timed out after {timeout}s")
