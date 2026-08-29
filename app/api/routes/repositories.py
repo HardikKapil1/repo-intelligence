@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.schemas.repository import RepositoryCreate, RepositoryResponse
 from app.services import repository_service
-from app.services.ingestion_service import IngestionService
+from app.workers.ingestion_worker import index_repository_job
+from app.workers.queue import ingestion_queue
 
 router = APIRouter()
 
@@ -27,22 +28,32 @@ async def create_repository(
     return repository_service.create_repository(db=db, repository_in=repository_in)
 
 
-@router.post("/repositories/{repository_id}/index")
+@router.post(
+    "/repositories/{repository_id}/index",
+    status_code=status.HTTP_202_ACCEPTED,
+)
 def index_repository(
     repository_id: UUID,
     db: Session = Depends(get_db),  # noqa: B008
 ):
-    service = IngestionService(db)
+    repository = repository_service.get_repository_by_id(
+        db,
+        repository_id,
+    )
 
-    try:
-        service.index_repository(repository_id)
-    except ValueError as exc:
+    if repository is None:
         raise HTTPException(
-            status_code=404,
-            detail=str(exc),
-        ) from exc
-    
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Repository not found",
+        )
+
+    job = ingestion_queue.enqueue(
+        index_repository_job,
+        str(repository_id),
+    )
+
     return {
         "repository_id": str(repository_id),
-        "status": "indexing_completed",
+        "job_id": job.id,
+        "status": "queued",
     }
