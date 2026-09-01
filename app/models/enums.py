@@ -7,3 +7,10 @@ class RepositoryStatus(str, Enum):
     INDEXING = "INDEXING"
     READY = "READY"
     FAILED = "FAILED"
+
+
+class IngestionJobStatus(str, Enum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
