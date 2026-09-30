@@ -292,10 +292,17 @@ class IngestionService:
         # 1. Read source
         # -------------------------------------------------------------
 
-        source = source_file.path.read_text(
-            encoding="utf-8",
-            errors="replace",
-        )
+        try:
+            source = source_file.path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
+        except (OSError, UnicodeDecodeError) as exc:
+            print(
+                f"    [READ FAILED] {source_file.relative_path} → {exc}",
+                flush=True,
+            )
+            return
 
         print(
             f"    [READ] {len(source)} characters",

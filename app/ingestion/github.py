@@ -1,4 +1,5 @@
 # app/ingestion/github.py
+import shutil
 import subprocess
 from pathlib import Path
 from uuid import UUID
@@ -36,13 +37,16 @@ class GitHubCloner:
                 timeout=300,
             )
         except subprocess.TimeoutExpired as exc:
+            shutil.rmtree(destination, ignore_errors=True)
             raise RepositoryCloneError(
                 "Repository clone timed out after 5 minutes."
             ) from exc
         except subprocess.CalledProcessError as exc:
+            shutil.rmtree(destination, ignore_errors=True)
             error = exc.stderr.strip() or "Unknown git error."
             raise RepositoryCloneError(f"Failed to clone repository: {error}") from exc
         except OSError as exc:
+            shutil.rmtree(destination, ignore_errors=True)
             raise RepositoryCloneError(
                 "Git is not installed or could not be executed."
             ) from exc
